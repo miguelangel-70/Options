@@ -73,7 +73,7 @@ if os.path.exists("style.css"):
 # ===================== MENÚ PRINCIPAL =====================
 with st.sidebar:
     if st.session_state.get("hojas_disponibles"):
-        st.markdown("<h4 style='color: white; margin-bottom: 0.5rem;'>📄 Selección de hoja activa</h4>",unsafe_allow_html=True)
+        st.markdown("<h4 style='color: white; margin-bottom: 0.5rem;'>📄 Selección de Índice</h4>",unsafe_allow_html=True)
 
         hoja_seleccionada = st.selectbox(
             "Selecciona hoja activa",  # Etiqueta accesible
@@ -98,8 +98,8 @@ with st.sidebar:
             
     selected = option_menu(
         "Menú Principal",
-        ["Visualización", "Cargar Datos", "Configuración"],
-        icons=["bar-chart", "upload", "gear"],
+        ["Visualización", "Estadísticas", "Cargar Datos", "Configuración"],
+        icons=["bar-chart", "graph-up", "upload", "gear"],
         menu_icon="cast",
         default_index=0,
     )
@@ -368,4 +368,8 @@ elif selected == "Visualización":
 
 elif selected == "Configuración":
     st.markdown("<h2 class='fade-in'>Configuración</h2>", unsafe_allow_html=True)
-    st.write("Opciones de configuración próximamente.")
+    st.write("📊 Próximamente disponibles Opciones de configuración.")
+
+elif selected == "Estadísticas":
+    st.markdown("<h2 class='fade-in'>Estadísticas</h2>", unsafe_allow_html=True)
+    st.info("📊 Próximamente disponibles estadísticas por vencimiento y strike.")    
