@@ -8,7 +8,6 @@ import os
 import io
 import openpyxl
 import shutil
-import sys
 
 # ===================== CONFIGURACIÓN DE LA APLICACIÓN =====================
 st.set_page_config(
@@ -43,8 +42,6 @@ if "nombre_hoja_excel" not in st.session_state:
     st.session_state["nombre_hoja_excel"] = "Datos"
 if "hojas_disponibles" not in st.session_state:
     st.session_state["hojas_disponibles"] = []
-if "confirmar_salida" not in st.session_state:
-    st.session_state["confirmar_salida"] = False
 
 # ==== Carga automática de base de datos ====
 if st.session_state["df_memoria"] is None and os.path.exists(BASE_DATOS_PATH):
@@ -69,9 +66,9 @@ if st.session_state["df_memoria"] is None and os.path.exists(BASE_DATOS_PATH):
         st.session_state["nombre_base_activa"] = None
 
 # ===================== CARGAR CSS =====================
-#if os.path.exists("style.css"):
-#    with open("style.css") as f:
-#        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+if os.path.exists("style.css"):
+    with open("style.css") as f:
+        st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
 
 # ===================== MENÚ PRINCIPAL =====================
 with st.sidebar:
@@ -87,9 +84,10 @@ with st.sidebar:
             key="hoja_activa",
             label_visibility="collapsed"  # Oculta visualmente la etiqueta, pero mantiene accesibilidad
         )
+        # Detectar cambio de hoja y actualizar df_memoria si es necesario
 
     # Detectar cambio de hoja y actualizar df_memoria si es necesario
-    if st.session_state.get("hojas_disponibles") and hoja_seleccionada != st.session_state.get("nombre_hoja_excel"):
+    if hoja_seleccionada != st.session_state.get("nombre_hoja_excel"):
         st.session_state["nombre_hoja_excel"] = hoja_seleccionada
         try:
             df = pd.read_excel(BASE_DATOS_PATH, sheet_name=hoja_seleccionada)
@@ -97,62 +95,14 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.error(f"No se pudo cargar la hoja seleccionada: {str(e)}")
-
-    st.image("https://via.placeholder.com/220x60?text=✨+LOGO", use_container_width=True)
-    
-    # Solo mostrar el menú si no estamos en modo de confirmación de salida
-    if not st.session_state.get("confirmar_salida", False):
-        selected = option_menu(
-            "Menú Principal",
-            ["Visualización", "Cargar Datos", "Configuración"],
-            icons=["bar-chart", "upload", "gear"],
-            menu_icon="cast",
-            default_index=0,
-        )
-    else:
-        # Mantener la selección anterior cuando estamos en confirmación
-        selected = st.session_state.get("menu_anterior", "Visualización")
-    
-    # ===================== BOTÓN DE SALIR =====================
-    st.markdown("---")
-    
-    # Mostrar confirmación de salida si está activada
-    if st.session_state.get("confirmar_salida", False):
-        st.markdown("#### ⚠️ ¿Seguro que desea salir?")
-        col_si, col_no = st.columns(2)
-        
-        with col_si:
-            if st.button("✅ Sí, salir", type="primary", use_container_width=True):
-                st.balloons()
-                st.success("¡Cerrando aplicación!")
-                
-                # Mostrar mensaje final
-                st.markdown("""
-                    <div style="text-align: center; margin-top: 20px; padding: 20px; 
-                                background-color: #f0f2f6; border-radius: 10px;">
-                        <h3>✅ Aplicación cerrada correctamente</h3>
-                        <p><strong>Para cerrar completamente:</strong></p>
-                        <p>1. Cierre esta pestaña del navegador</p>
-                        <p>2. En la terminal, presione <kbd>Ctrl+C</kbd> para detener el servidor</p>
-                    </div>
-                """, unsafe_allow_html=True)
-                
-                # Detener completamente la ejecución
-                os._exit(0)
-        
-        with col_no:
-            if st.button("❌ Cancelar", use_container_width=True):
-                st.session_state["confirmar_salida"] = False
-                st.rerun()
-    else:
-        # Mostrar botón de salir normal
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            if st.button("🚪 Salir", type="secondary", use_container_width=True):
-                # Guardar el menú actual antes de mostrar confirmación
-                st.session_state["menu_anterior"] = selected
-                st.session_state["confirmar_salida"] = True
-                st.rerun()
+            
+    selected = option_menu(
+        "Menú Principal",
+        ["Visualización", "Cargar Datos", "Configuración"],
+        icons=["bar-chart", "upload", "gear"],
+        menu_icon="cast",
+        default_index=0,
+    )
 
 # ===================== FUNCIONES =====================
 def mostrar_mensaje(tipo, texto):
@@ -353,151 +303,69 @@ def generar_grafico_barras(df, fecha_vencimiento, fecha_carga=None):
     return fig
 
 # ===================== FUNCIONALIDAD =====================
-# Solo mostrar contenido si no estamos en modo de confirmación de salida
-if not st.session_state.get("confirmar_salida", False):
-    if selected == "Cargar Datos":
-        st.markdown("<h2 class='fade-in'>Cargar Datos</h2>", unsafe_allow_html=True)
-        opcion_menu = st.radio("Seleccione una opción:", ("Cargar nueva base de datos (Excel)", "Ampliar base de datos existente (CSV)"))
+if selected == "Cargar Datos":
+    st.markdown("<h2 class='fade-in'>Cargar Datos</h2>", unsafe_allow_html=True)
+    
+    # Mostrar mensaje de permisos y detener la ejecución
+    st.error("🔒 Necesarios permisos de administrador para modificar la base de datos")
+    st.info("Contacte con el administrador del sistema para realizar modificaciones en la base de datos.")
+    st.stop()
 
-        if opcion_menu == "Cargar nueva base de datos (Excel)":
-            uploaded_file = st.file_uploader("Seleccione archivo de datos (XLSX)", type=["xlsx"])
+elif selected == "Visualización":
+    st.markdown("<h2 class='fade-in'>Visualización</h2>", unsafe_allow_html=True)
+    df = st.session_state["df_memoria"]
 
-            if uploaded_file:
-                df = cargar_xlsx(uploaded_file)
-                if df is None or df.empty:
-                    mostrar_mensaje("error", "No se pudieron cargar los datos. Verifique el formato del archivo.")
-                    st.stop()
+    if df is not None and not df.empty:
+        # Filtrar fechas de extracción que tengan al menos una fecha de vencimiento asociada
+        fechas_extraccion_validas = df.groupby('Fecha de Extracción')['Expiration Date'].nunique()
+        fechas_extraccion = sorted(fechas_extraccion_validas[fechas_extraccion_validas > 0].index, reverse=True)
 
-                hoja_cargada = st.session_state.get("nombre_hoja_excel", "Datos")
+        # Inicialmente se puede dejar las fechas de vencimiento vacías (se actualizarán luego)
+        fechas_vencimiento = []
 
-                # Guardar la hoja cargada
-                #guardar_base_datos(df, hoja_destino=hoja_cargada)
 
-                # Actualizar el estado después de guardar
-                st.session_state["df_memoria"] = df
-                st.session_state["nombre_base_activa"] = uploaded_file.name
+        col1, col2 = st.columns(2)
 
-            
-        else:
-            if st.session_state["df_memoria"] is None:
-                mostrar_mensaje("error", "Primero debe cargar una base de datos Excel para poder ampliarla con CSV.")
-                st.stop()
-
-            if "fecha_extraccion_csv" not in st.session_state:
-                st.session_state["fecha_extraccion_csv"] = datetime.today().date()
-
-            st.session_state["fecha_extraccion_csv"] = st.date_input(
-                "Seleccione la fecha de extracción para los nuevos datos:",
-                value=st.session_state["fecha_extraccion_csv"]
+        with col1:
+            fecha_extraccion = st.selectbox(
+                "Seleccione fecha de extracción:",
+                fechas_extraccion,
+                format_func=lambda x: x.strftime('%Y-%m-%d')
             )
 
-            uploaded_csv = st.file_uploader("Seleccione archivo de datos (CSV)", type=["csv"])
+        with col2:
+            fechas_vencimiento = sorted(df[df['Fecha de Extracción'] == fecha_extraccion]['Expiration Date'].unique())
+            fecha_vencimiento = st.selectbox(
+                "Seleccione fecha de vencimiento:",
+                fechas_vencimiento,
+                format_func=lambda x: x.strftime('%Y-%m-%d')
+            )
 
-            if uploaded_csv is not None:
-                hoja_csv = st.selectbox(
-                    "Selecciona la hoja donde agregar los datos:",
-                    st.session_state.get("hojas_disponibles", ["Datos"])
-                )
+        df_filtrado = df[(df['Fecha de Extracción'] == fecha_extraccion) & (df['Expiration Date'] == fecha_vencimiento)]
 
-                nuevos_datos = cargar_csv(uploaded_csv)
-                if nuevos_datos is None or nuevos_datos.empty:
-                    mostrar_mensaje("error", "No se pudieron cargar los datos CSV.")
-                    st.stop()
+        if not df_filtrado.empty:
+            st.subheader(f"{st.session_state['nombre_hoja_excel']} - Open Interest\nExtracción: {fecha_extraccion} | Vencimiento: {fecha_vencimiento}")
+            fig = generar_grafico_barras(df_filtrado, fecha_vencimiento, fecha_extraccion)
+            st.pyplot(fig)
 
-                fecha_elegida = st.session_state["fecha_extraccion_csv"]
-                nuevos_datos['Fecha de Extracción'] = fecha_elegida
+            buf = io.BytesIO()
+            fig.savefig(buf, format="png", bbox_inches='tight')
+            buf.seek(0)
 
-                if st.button("📥 Confirmar carga en la base de datos"):
-                    try:
-                        base_actual = pd.read_excel(BASE_DATOS_PATH, sheet_name=hoja_csv)
-                        base_actual['Expiration Date'] = pd.to_datetime(base_actual['Expiration Date'])
-                        base_actual['Fecha de Extracción'] = pd.to_datetime(base_actual['Fecha de Extracción']).dt.date
+            file_name = (
+                f"{st.session_state['nombre_hoja_excel']} - IO vencimiento ({fecha_vencimiento.strftime('%Y-%m-%d')}) "
+                f"- extraccion ({fecha_extraccion.strftime('%Y-%m-%d')}).png"
+            )
+            
+            st.download_button("📥 Descargar imagen", data=buf, file_name=file_name, mime="image/png")
 
-                        combinaciones_existentes = base_actual[['Fecha de Extracción', 'Expiration Date']].drop_duplicates()
-                        conflictivas = nuevos_datos.merge(combinaciones_existentes, on=['Fecha de Extracción', 'Expiration Date'], how='inner')
-
-                        if not conflictivas.empty:
-                            mostrar_mensaje("error", f"Ya existen datos para esa combinación en la hoja '{hoja_csv}'.")
-                            st.stop()
-
-                        # Crear copia de seguridad antes de modificar
-                        backup_name = f"base_datos_backup_{hoja_csv}_{fecha_elegida.strftime('%Y%m%d')}.xlsx"
-                        guardar_base_datos(base_actual, hoja_destino=hoja_csv, backup=True, backup_name=backup_name)
-
-                        base_merged = pd.concat([base_actual, nuevos_datos]).drop_duplicates(
-                            ['Fecha de Extracción', 'Expiration Date', 'Strike'],
-                            keep='last'
-                        )
-
-                        # Guardar solo la hoja seleccionada
-                        guardar_base_datos(base_merged, hoja_destino=hoja_csv)
-
-                        # Actualizar solo si se guardó correctamente
-                        st.session_state["df_memoria"] = base_merged
-                        st.session_state["nombre_base_activa"] = uploaded_csv.name
-                        st.session_state["nombre_hoja_excel"] = hoja_csv
-
-                        mostrar_mensaje("success", f"Datos agregados exitosamente a la hoja '{hoja_csv}'.")
-
-                    except Exception as e:
-                        mostrar_mensaje("error", f"Error al actualizar la hoja: {str(e)}")
-
-
-    elif selected == "Visualización":
-        st.markdown("<h2 class='fade-in'>Visualización</h2>", unsafe_allow_html=True)
-        df = st.session_state["df_memoria"]
-
-        if df is not None and not df.empty:
-            # Filtrar fechas de extracción que tengan al menos una fecha de vencimiento asociada
-            fechas_extraccion_validas = df.groupby('Fecha de Extracción')['Expiration Date'].nunique()
-            fechas_extraccion = sorted(fechas_extraccion_validas[fechas_extraccion_validas > 0].index, reverse=True)
-
-            # Inicialmente se puede dejar las fechas de vencimiento vacías (se actualizarán luego)
-            fechas_vencimiento = []
-
-
-            col1, col2 = st.columns(2)
-
-            with col1:
-                fecha_extraccion = st.selectbox(
-                    "Seleccione fecha de extracción:",
-                    fechas_extraccion,
-                    format_func=lambda x: x.strftime('%Y-%m-%d')
-                )
-
-            with col2:
-                fechas_vencimiento = sorted(df[df['Fecha de Extracción'] == fecha_extraccion]['Expiration Date'].unique())
-                fecha_vencimiento = st.selectbox(
-                    "Seleccione fecha de vencimiento:",
-                    fechas_vencimiento,
-                    format_func=lambda x: x.strftime('%Y-%m-%d')
-                )
-
-            df_filtrado = df[(df['Fecha de Extracción'] == fecha_extraccion) & (df['Expiration Date'] == fecha_vencimiento)]
-
-            if not df_filtrado.empty:
-                st.subheader(f"{st.session_state['nombre_hoja_excel']} - Open Interest\nExtracción: {fecha_extraccion} | Vencimiento: {fecha_vencimiento}")
-                fig = generar_grafico_barras(df_filtrado, fecha_vencimiento, fecha_extraccion)
-                st.pyplot(fig)
-
-                buf = io.BytesIO()
-                fig.savefig(buf, format="png", bbox_inches='tight')
-                buf.seek(0)
-
-                file_name = (
-                    f"{st.session_state['nombre_hoja_excel']} - IO vencimiento ({fecha_vencimiento.strftime('%Y-%m-%d')}) "
-                    f"- extraccion ({fecha_extraccion.strftime('%Y-%m-%d')}).png"
-                )
-                
-                st.download_button("📥 Descargar imagen", data=buf, file_name=file_name, mime="image/png")
-
-                if st.checkbox("Mostrar tabla de datos completos", value=False):
-                    st.dataframe(df_filtrado[['Strike', 'Call Open Interest', 'Put Open Interest']].sort_values('Strike'))
-            else:
-                mostrar_mensaje("warning", "No hay datos disponibles para los filtros seleccionados.")
+            if st.checkbox("Mostrar tabla de datos completos", value=False):
+                st.dataframe(df_filtrado[['Strike', 'Call Open Interest', 'Put Open Interest']].sort_values('Strike'))
         else:
-            st.info("No se ha cargado ninguna base de datos. Por favor, use la opción 'Cargar Datos'.")
+            mostrar_mensaje("warning", "No hay datos disponibles para los filtros seleccionados.")
+    else:
+        st.info("No se ha cargado ninguna base de datos. Por favor, use la opción 'Cargar Datos'.")
 
-    elif selected == "Configuración":
-        st.markdown("<h2 class='fade-in'>Configuración</h2>", unsafe_allow_html=True)
-        st.write("Opciones de configuración próximamente.")
+elif selected == "Configuración":
+    st.markdown("<h2 class='fade-in'>Configuración</h2>", unsafe_allow_html=True)
+    st.write("Opciones de configuración próximamente.")
