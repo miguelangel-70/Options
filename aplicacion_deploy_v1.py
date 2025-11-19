@@ -678,4 +678,5 @@ if not st.session_state.get("confirmar_salida", False):
         st.write("Opciones de configuración próximamente.")
 
     
+
    
