@@ -529,7 +529,7 @@ def generate_evolution_chart(hoja: str, fecha_vencimiento: str, strike: float):
 
 
 def generate_bar_chart_image(df: pd.DataFrame, expiration_date: str, extraction_date: str, asset: str) -> str:
-    """Genera imagen del gráfico de barras"""
+    """Genera imagen del gráfico de barras con números de OI"""
     try:
         plt.ioff()
         
@@ -546,13 +546,52 @@ def generate_bar_chart_image(df: pd.DataFrame, expiration_date: str, extraction_
             call_values = -strikes_top['call_oi'].values
             put_values = strikes_top['put_oi'].values
             
-            ax.barh(bar_labels, call_values, color='green', alpha=0.7, label='CALL OI')
-            ax.barh(bar_labels, put_values, color='red', alpha=0.7, label='PUT OI')
+            # Calcular buffer para el eje X
+            max_call = abs(call_values).max()
+            max_put = put_values.max()
+            max_oi = max(max_call, max_put)
+            x_buffer = max_oi * 0.2
             
+            # Dibujar barras
+            bars_call = ax.barh(bar_labels, call_values, color='green', alpha=0.7, label='CALL OI')
+            bars_put = ax.barh(bar_labels, put_values, color='red', alpha=0.7, label='PUT OI')
+            
+            # Añadir valores CALL
+            for bar in bars_call:
+                width = bar.get_width()
+                if width != 0:
+                    ax.annotate(
+                        f'{abs(int(width)):,}',
+                        xy=(width, bar.get_y() + bar.get_height() / 2),
+                        xytext=(-5, 0),
+                        textcoords="offset points",
+                        ha='right',
+                        va='center',
+                        color='#2E7D32',
+                        fontsize=10,
+                    )
+            
+            # Añadir valores PUT
+            for bar in bars_put:
+                width = bar.get_width()
+                if width != 0:
+                    ax.annotate(
+                        f'{int(width):,}',
+                        xy=(width, bar.get_y() + bar.get_height() / 2),
+                        xytext=(5, 0),
+                        textcoords="offset points",
+                        ha='left',
+                        va='center',
+                        color='#C62828',
+                        fontsize=10,
+                    )
+            
+            ax.set_xlim(-max_call - x_buffer, max_put + x_buffer)
             ax.axvline(0, color='black', linewidth=1)
             ax.set_xlabel('Open Interest')
             ax.set_ylabel('Strike Price')
             ax.legend()
+            ax.grid(True, alpha=0.3)
         
         plt.suptitle(f"{asset} - Open Interest\nVencimiento: {expiration_date} | Extracción: {extraction_date}")
         fig.tight_layout()
@@ -569,9 +608,8 @@ def generate_bar_chart_image(df: pd.DataFrame, expiration_date: str, extraction_
         logger.error(f"Error generando imagen de barras: {e}")
         return ""
 
-
 def generate_evolution_chart_image(df: pd.DataFrame, expiration_date: str, strike: float, asset: str) -> str:
-    """Genera imagen del gráfico de evolución"""
+    """Genera imagen del gráfico de evolución con números de OI"""
     try:
         plt.ioff()
         
@@ -582,8 +620,27 @@ def generate_evolution_chart_image(df: pd.DataFrame, expiration_date: str, strik
         call_oi = df['call_oi']
         put_oi = df['put_oi']
         
-        ax.plot(dates, call_oi, marker='o', linewidth=2, color='green', label='CALL OI')
-        ax.plot(dates, put_oi, marker='s', linewidth=2, color='red', label='PUT OI')
+        # Dibujar líneas
+        ax.plot(dates, call_oi, marker='o', linewidth=2, color='green', label='CALL OI', markersize=6)
+        ax.plot(dates, put_oi, marker='s', linewidth=2, color='red', label='PUT OI', markersize=6)
+        
+        # Agregar valores en los puntos
+        for i, (date, call_val, put_val) in enumerate(zip(dates, call_oi, put_oi)):
+            ax.annotate(f'{int(call_val):,}', 
+                       xy=(date, call_val), 
+                       xytext=(0, 10), 
+                       textcoords="offset points",
+                       ha='center', va='bottom',
+                       fontsize=10, color='#2E7D32',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.7))
+            
+            ax.annotate(f'{int(put_val):,}', 
+                       xy=(date, put_val), 
+                       xytext=(0, -15), 
+                       textcoords="offset points",
+                       ha='center', va='top',
+                       fontsize=10, color='#C62828',
+                       bbox=dict(boxstyle="round,pad=0.3", facecolor='white', alpha=0.7))
         
         ax.set_xlabel('Fecha de Extracción')
         ax.set_ylabel('Open Interest')
@@ -605,7 +662,6 @@ def generate_evolution_chart_image(df: pd.DataFrame, expiration_date: str, strik
     except Exception as e:
         logger.error(f"Error generando imagen de evolución: {e}")
         return ""
-
 
 def get_fechas_vencimiento_oex(hoja: str):
     """Obtiene fechas de vencimiento desde OEX"""
@@ -1319,6 +1375,7 @@ if not st.session_state.get("confirmar_salida", False):
                 st.warning("No se pudo generar el gráfico. Intente con otros parámetros.")
     
     # ==== VENCIMIENTOS ====
+
     elif selected == "Vencimientos":
         st.markdown("<h2 class='fade-in'>📅 Vencimientos - EUROSTOXX</h2>", unsafe_allow_html=True)
         
@@ -1671,7 +1728,7 @@ if not st.session_state.get("confirmar_salida", False):
                                         )
             else:
                 st.error("Error al cargar los datos del vencimiento seleccionado.")
-    
+                
     # ==== CARGAR DATOS ====
     elif selected == "Cargar Datos":
         if not st.session_state.get("acceso_cargar_datos", False):
