@@ -20,6 +20,9 @@ import os
 import logging
 from typing import Optional, Dict, Any, List
 from pathlib import Path
+import shutil
+import time
+
 
 # ============================================================================
 # CONFIGURACIÓN INICIAL
@@ -54,6 +57,67 @@ def get_data_source():
         return "excel"
     else:
         return "none"
+
+import time
+
+def mostrar_mensaje(tipo, texto):
+    """
+    Agrega un mensaje a la cola para mostrarlo después del rerun
+    """
+    # Inicializar cola si no existe
+    if "cola_mensajes" not in st.session_state:
+        st.session_state["cola_mensajes"] = []
+    
+    # Agregar mensaje a la cola (evitar duplicados recientes)
+    mensaje_nuevo = {
+        "tipo": tipo,
+        "texto": texto,
+        "timestamp": time.time()
+    }
+    
+    # Verificar si el mensaje ya existe en la cola (últimos 2 segundos)
+    duplicado = False
+    for msg in st.session_state["cola_mensajes"]:
+        if msg["texto"] == texto and (time.time() - msg["timestamp"]) < 2:
+            duplicado = True
+            break
+    
+    if not duplicado:
+        st.session_state["cola_mensajes"].append(mensaje_nuevo)
+
+
+def mostrar_mensaje_pendiente():
+    """
+    Muestra todos los mensajes pendientes en la cola
+    DEBE LLAMARSE AL INICIO DEL CONTENIDO PRINCIPAL
+    """
+    if "cola_mensajes" not in st.session_state:
+        return
+    
+    mensajes_a_eliminar = []
+    
+    for idx, msg in enumerate(st.session_state["cola_mensajes"]):
+        # Solo mostrar mensajes recientes (menos de 5 segundos)
+        if time.time() - msg["timestamp"] < 5:
+            
+            # Mostrar según tipo
+            if msg["tipo"] == "success":
+                st.success(msg["texto"])
+            elif msg["tipo"] == "warning":
+                st.warning(msg["texto"])
+            elif msg["tipo"] == "error":
+                st.error(msg["texto"])
+            else:
+                st.info(msg["texto"])
+            
+            mensajes_a_eliminar.append(idx)
+        else:
+            # Marcar mensajes antiguos para eliminar
+            mensajes_a_eliminar.append(idx)
+    
+    # Eliminar mensajes mostrados o expirados (en orden inverso para no afectar índices)
+    for idx in sorted(mensajes_a_eliminar, reverse=True):
+        st.session_state["cola_mensajes"].pop(idx)
 
 
 def init_sqlite_pragmas(conn: sqlite3.Connection) -> None:
@@ -96,9 +160,8 @@ def ensure_oi_indexes(conn: sqlite3.Connection) -> None:
     except Exception as e:
         logger.warning(f"Error creando índices: {e}")
 
-
 def create_sqlite_from_excel():
-    """Crea SQLite desde Excel"""
+    """Crea SQLite desde Excel - Compatible con múltiples formatos"""
     if not os.path.exists(EXCEL_PATH):
         return False
     
@@ -132,42 +195,86 @@ def create_sqlite_from_excel():
             
             df = pd.read_excel(EXCEL_PATH, sheet_name=sheet_name)
             
-            if "Call Open Interest" not in df.columns or "Put Open Interest" not in df.columns:
-                if "Open Interest" in df.columns and "Open Interest.1" in df.columns:
-                    df = df.rename(columns={
-                        "Open Interest": "Call Open Interest",
-                        "Open Interest.1": "Put Open Interest"
-                    })
+            # DETECCIÓN AUTOMÁTICA DE FORMATO - CORREGIDA
+            if "Trade Date" in df.columns and "call_oi" in df.columns and "put_oi" in df.columns:
+                # FORMATO SP500 ORIGINAL
+                logger.info(f"Detectado formato SP500 para {sheet_name}")
+                
+                # Renombrar al formato estándar
+                df = df.rename(columns={
+                    "Trade Date": "Fecha de Extracción",
+                    "Expiration Date": "Expiration Date",
+                    "call_oi": "Call Open Interest",
+                    "put_oi": "Put Open Interest"
+                })
+                # Strike ya está con el nombre correcto
+                
+            elif "Fecha de Extracción" in df.columns:
+                # FORMATO EUROSTOXX/VIX
+                logger.info(f"Detectado formato EUROSTOXX/VIX para {sheet_name}")
+                
+                # Verificar y renombrar columnas si es necesario
+                if "Call Open Interest" not in df.columns or "Put Open Interest" not in df.columns:
+                    if "Open Interest" in df.columns and "Open Interest.1" in df.columns:
+                        df = df.rename(columns={
+                            "Open Interest": "Call Open Interest",
+                            "Open Interest.1": "Put Open Interest"
+                        })
+            else:
+                logger.warning(f"Formato no reconocido en {sheet_name}, saltando...")
+                continue
             
-            required_cols = {
-                "Fecha de Extracción": "extraction_date",
-                "Expiration Date": "expiration_date",
-                "Strike": "strike",
-                "Call Open Interest": "call_oi",
-                "Put Open Interest": "put_oi",
-            }
+            # AHORA TODAS LAS HOJAS TIENEN EL FORMATO ESTÁNDAR
+            # Verificar que tenemos las columnas correctas
+            required_columns = ["Fecha de Extracción", "Expiration Date", "Strike", "Call Open Interest", "Put Open Interest"]
             
-            for old_col, new_col in required_cols.items():
-                if old_col in df.columns:
-                    df = df.rename(columns={old_col: new_col})
+            for col in required_columns:
+                if col not in df.columns:
+                    logger.error(f"Columna faltante {col} en {sheet_name}")
+                    raise ValueError(f"Columna {col} no encontrada en {sheet_name}")
             
-            df["strike"] = pd.to_numeric(df["strike"], errors="coerce")
-            df["call_oi"] = pd.to_numeric(df["call_oi"], errors="coerce").fillna(0).astype(int)
-            df["put_oi"] = pd.to_numeric(df["put_oi"], errors="coerce").fillna(0).astype(int)
+            # Procesamiento común
+            df["strike"] = pd.to_numeric(df["Strike"], errors="coerce")
+            df["call_oi"] = pd.to_numeric(df["Call Open Interest"], errors="coerce").fillna(0).astype(int)
+            df["put_oi"] = pd.to_numeric(df["Put Open Interest"], errors="coerce").fillna(0).astype(int)
             
-            df["extraction_date"] = date_to_int(df["extraction_date"])
-            df["expiration_date"] = date_to_int(df["expiration_date"])
+            df["extraction_date"] = date_to_int(df["Fecha de Extracción"])
+            df["expiration_date"] = date_to_int(df["Expiration Date"])
             
+            # ELIMINAR DUPLICADOS ANTES DE INSERTAR
+            # Esto es importante porque puede haber duplicados en el Excel
             df = df.dropna(subset=["extraction_date", "expiration_date", "strike"])
+            
+            # Identificar duplicados exactos
+            duplicates = df.duplicated(subset=["extraction_date", "expiration_date", "strike"], keep='first')
+            if duplicates.any():
+                logger.warning(f"Encontrados {duplicates.sum()} registros duplicados en {sheet_name}, eliminando...")
+                df = df[~duplicates]
+            
             df["asset"] = sheet_name.upper().strip()
-            df = df[["asset", "extraction_date", "expiration_date", "strike", "call_oi", "put_oi"]]
             
+            # Seleccionar columnas finales
+            df_final = df[["asset", "extraction_date", "expiration_date", "strike", "call_oi", "put_oi"]]
+            
+            # Insertar en lotes
             chunk_size = 2000
-            for i in range(0, len(df), chunk_size):
-                chunk = df.iloc[i:i + chunk_size]
-                chunk.to_sql("open_interest", conn, if_exists="append", index=False)
+            for i in range(0, len(df_final), chunk_size):
+                chunk = df_final.iloc[i:i + chunk_size]
+                try:
+                    chunk.to_sql("open_interest", conn, if_exists="append", index=False)
+                except sqlite3.IntegrityError as e:
+                    # Si hay duplicados, intentar insertar uno por uno
+                    logger.warning(f"Error de integridad en lote {i}: {e}")
+                    for _, row in chunk.iterrows():
+                        try:
+                            row_df = pd.DataFrame([row])
+                            row_df.to_sql("open_interest", conn, if_exists="append", index=False)
+                        except sqlite3.IntegrityError:
+                            # Si el registro ya existe, saltarlo
+                            logger.debug(f"Registro duplicado saltado: {row['asset']}, {row['extraction_date']}, {row['expiration_date']}, {row['strike']}")
+                            continue
             
-            logger.info(f"{len(df)} registros insertados para asset={sheet_name}")
+            logger.info(f"{len(df_final)} registros insertados para asset={sheet_name}")
         
         logger.info("Optimizando base de datos...")
         conn.execute("ANALYZE;")
@@ -175,6 +282,7 @@ def create_sqlite_from_excel():
         conn.close()
         
         logger.info("Base de datos SQLite creada exitosamente")
+        mostrar_mensaje("success", "Base de datos SQLite creada exitosamente.")
         return True
         
     except Exception as e:
@@ -206,33 +314,201 @@ def execute_sql_query(query: str, params: tuple = None):
         conn.close()
 
 
-def get_excel_data(hoja: str):
-    """Obtiene datos desde Excel"""
+def upload_excel_file(uploaded_file):
+    """Carga archivo Excel"""
     try:
-        df = pd.read_excel(EXCEL_PATH, sheet_name=hoja)
+        contents = uploaded_file.getvalue()
         
-        column_mapping = {
-            "Fecha de Extracción": "extraction_date",
-            "Expiration Date": "expiration_date", 
-            "Strike": "strike",
-            "Call Open Interest": "call_oi",
-            "Put Open Interest": "put_oi"
+        # Limpiar base de datos existente
+        limpiar_base_datos_existente()
+        
+        # Guardar Excel
+        with open(EXCEL_PATH, "wb") as f:
+            f.write(contents)
+        
+        # Crear nueva BD desde Excel
+        success = create_sqlite_from_excel()
+        
+        if not success:
+            return None
+        
+        conn = get_database_connection()
+        cursor = conn.execute("SELECT DISTINCT asset FROM open_interest ORDER BY asset")
+        assets = [row['asset'] for row in cursor.fetchall()]
+        conn.close()
+        
+        get_estado.clear()
+        get_fechas_extraccion.clear()
+        get_fechas_vencimiento.clear()
+        get_strikes.clear()
+        mostrar_mensaje("success", f"Archivo {uploaded_file.name} cargado exitosamente. Base de datos SQLite creada.")
+        time.sleep(2)
+        return {
+            "mensaje": f"Archivo {uploaded_file.name} cargado exitosamente. Base de datos SQLite creada.",
+            "hojas_disponibles": assets,
+            "hoja_activa": assets[0] if assets else None
         }
         
-        df = df.rename(columns=column_mapping)
+    except Exception as e:
+        logger.error(f"Error cargando Excel: {e}")
+        try:
+            if os.path.exists(EXCEL_PATH):
+                os.remove(EXCEL_PATH)
+            if os.path.exists(DB_PATH):
+                os.remove(DB_PATH)
+        except:
+            pass
+        return None
+
+def cargar_calendario_vencimientos():
+    """Carga el calendario de vencimientos y crea diccionario de mapeo"""
+    try:
+        # Primero intentar cargar desde archivo CSV/Excel
+        calendario_paths = [
+            "calendario_vencimientos.csv",
+            "calendario_vencimientos.xlsx",
+            "vencimientos.csv",
+            "calendario.csv",
+            "OEX_cierre_semanal.xlsx"
+        ]
         
-        df['call_oi'] = pd.to_numeric(df['call_oi'], errors='coerce').fillna(0)
-        df['put_oi'] = pd.to_numeric(df['put_oi'], errors='coerce').fillna(0)
-        df['strike'] = pd.to_numeric(df['strike'], errors='coerce')
-        df['expiration_date'] = pd.to_datetime(df['expiration_date'], errors='coerce')
-        df['extraction_date'] = pd.to_datetime(df['extraction_date'], errors='coerce')
+        calendario_df = None
         
-        return df
+        for path in calendario_paths:
+            if os.path.exists(path):
+                try:
+                    logger.info(f"Intentando cargar calendario desde: {path}")
+                    
+                    if path.endswith('.csv'):
+                        # Intentar diferentes delimitadores
+                        try:
+                            calendario_df = pd.read_csv(path, encoding='utf-8')
+                        except:
+                            calendario_df = pd.read_csv(path, encoding='latin-1')
+                    else:  # Excel
+                        # Leer todas las hojas hasta encontrar datos de calendario
+                        xl = pd.ExcelFile(path)
+                        for sheet in xl.sheet_names:
+                            try:
+                                df_temp = pd.read_excel(path, sheet_name=sheet)
+                                # Verificar si tiene columnas relevantes
+                                if any(col in df_temp.columns for col in ['Mes', 'Periodo', 'Fecha_expiracion', 'Fecha']):
+                                    calendario_df = df_temp
+                                    logger.info(f"Calendario encontrado en hoja: {sheet}")
+                                    break
+                            except:
+                                continue
+                    
+                    if calendario_df is not None and not calendario_df.empty:
+                        logger.info(f"Calendario cargado desde {path}")
+                        break
+                        
+                except Exception as e:
+                    logger.warning(f"No se pudo cargar desde {path}: {e}")
+        
+        # Si no se encontró archivo, usar calendario embebido
+        if calendario_df is None or calendario_df.empty:
+            logger.info("Usando calendario embebido por defecto")
+            calendario_df = pd.DataFrame({
+                'Mes': ['Diciembre', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 
+                       'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre'],
+                'Periodo': [2025, 2026, 2026, 2026, 2026, 2026, 
+                          2026, 2026, 2026, 2026, 2026, 2026],
+                'Fecha_expiracion': ['19.12.2025', '16.01.2026', '20.02.2026', '20.03.2026',
+                                    '17.04.2026', '15.05.2026', '18.06.2026', '17.07.2026',
+                                    '21.08.2026', '18.09.2026', '16.10.2026', '20.11.2026']
+            })
+        
+        # Normalizar nombres de columnas
+        calendario_df.columns = calendario_df.columns.str.strip().str.lower()
+        
+        # Renombrar columnas si es necesario
+        column_mapping = {
+            'mes': 'mes',
+            'periodo': 'periodo',
+            'año': 'periodo',
+            'year': 'periodo',
+            'fecha_expiracion': 'fecha_expiracion',
+            'fecha': 'fecha_expiracion',
+            'expiration': 'fecha_expiracion',
+            'vencimiento': 'fecha_expiracion'
+        }
+        
+        for old_col in calendario_df.columns:
+            for key, value in column_mapping.items():
+                if key in old_col.lower():
+                    calendario_df = calendario_df.rename(columns={old_col: value})
+        
+        # Verificar columnas requeridas
+        required_cols = ['mes', 'periodo', 'fecha_expiracion']
+        missing_cols = [col for col in required_cols if col not in calendario_df.columns]
+        
+        if missing_cols:
+            logger.error(f"Columnas faltantes en calendario: {missing_cols}")
+            mostrar_mensaje("error", f"❌ Faltan columnas en calendario: {missing_cols}")
+            return {}
+        
+        # Convertir fechas
+        calendario_df['fecha_expiracion_dt'] = pd.to_datetime(
+            calendario_df['fecha_expiracion'], 
+            dayfirst=True,
+            errors='coerce'
+        )
+        
+        # Si la conversión falla, intentar otros formatos
+        if calendario_df['fecha_expiracion_dt'].isna().any():
+            calendario_df['fecha_expiracion_dt'] = pd.to_datetime(
+                calendario_df['fecha_expiracion'], 
+                errors='coerce'
+            )
+        
+        # Filtrar filas con fechas inválidas
+        calendario_df = calendario_df.dropna(subset=['fecha_expiracion_dt'])
+        
+        # Crear diccionario de búsqueda
+        calendario_dict = {}
+        
+        # Mapeo de meses abreviados en inglés y español
+        meses_abrev = {
+            # Español
+            'ENE': 'Enero', 'FEB': 'Febrero', 'MAR': 'Marzo', 'ABR': 'Abril',
+            'MAY': 'Mayo', 'JUN': 'Junio', 'JUL': 'Julio', 'AGO': 'Agosto',
+            'SEP': 'Septiembre', 'OCT': 'Octubre', 'NOV': 'Noviembre', 'DIC': 'Diciembre',
+            # Inglés
+            'JAN': 'Enero', 'FEB': 'Febrero', 'MAR': 'Marzo', 'APR': 'Abril',
+            'MAY': 'Mayo', 'JUN': 'Junio', 'JUL': 'Julio', 'AUG': 'Agosto',
+            'SEP': 'Septiembre', 'OCT': 'Octubre', 'NOV': 'Noviembre', 'DEC': 'Diciembre'
+        }
+        
+        for _, row in calendario_df.iterrows():
+            mes_completo = str(row['mes']).strip().title()
+            periodo = int(row['periodo'])
+            fecha_dt = row['fecha_expiracion_dt']
+            
+            # Clave con mes completo: "Diciembre 2025"
+            clave_completa = f"{mes_completo} {periodo}"
+            calendario_dict[clave_completa.upper()] = fecha_dt
+            
+            # Clave con primeras 3 letras: "DIC 2025"
+            for abrev_ing, mes_esp in meses_abrev.items():
+                if mes_esp.lower() == mes_completo.lower():
+                    clave_abrev = f"{abrev_ing} {periodo}"
+                    calendario_dict[clave_abrev.upper()] = fecha_dt
+        
+        logger.info(f"Calendario creado con {len(calendario_dict)} entradas")
+        
+        # Log para debugging
+        logger.info("Mapeos creados (primeros 5):")
+        for i, (clave, fecha) in enumerate(list(calendario_dict.items())[:5]):
+            logger.info(f"  {clave} -> {fecha.strftime('%Y-%m-%d')}")
+        
+        return calendario_dict
         
     except Exception as e:
-        logger.error(f"Error leyendo Excel: {e}")
-        raise
-
+        logger.error(f"Error cargando calendario: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {}
 
 # ============================================================================
 # FUNCIONES DE LÓGICA DE NEGOCIO (del backend.py)
@@ -859,15 +1135,28 @@ def get_detalle_vencimiento(hoja: str, fecha_vencimiento: str):
         logger.error(f"Error obteniendo detalle vencimiento: {e}")
         return None
 
-
 def upload_excel_file(uploaded_file):
     """Carga archivo Excel"""
     try:
         contents = uploaded_file.getvalue()
         
+        # Crear backup si existe BD previa
+        if os.path.exists(DB_PATH):
+            backup_dir = "backups"
+            os.makedirs(backup_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"base_datos_backup_{timestamp}.db"
+            backup_path = os.path.join(backup_dir, backup_filename)
+            shutil.copyfile(DB_PATH, backup_path)
+            logger.info(f"Backup creado: {backup_path}")
+            # ELIMINAR la BD antigua para evitar conflictos
+            os.remove(DB_PATH)
+        
+        # Guardar Excel
         with open(EXCEL_PATH, "wb") as f:
             f.write(contents)
         
+        # Crear nueva BD desde Excel
         success = create_sqlite_from_excel()
         
         if not success:
@@ -882,7 +1171,8 @@ def upload_excel_file(uploaded_file):
         get_fechas_extraccion.clear()
         get_fechas_vencimiento.clear()
         get_strikes.clear()
-        
+        mostrar_mensaje("success", f"Archivo {uploaded_file.name} cargado exitosamente. Base de datos SQLite creada.")
+        time.sleep(2)
         return {
             "mensaje": f"Archivo {uploaded_file.name} cargado exitosamente. Base de datos SQLite creada.",
             "hojas_disponibles": assets,
@@ -894,73 +1184,321 @@ def upload_excel_file(uploaded_file):
         try:
             if os.path.exists(EXCEL_PATH):
                 os.remove(EXCEL_PATH)
+            if os.path.exists(DB_PATH):
+                os.remove(DB_PATH)
         except:
             pass
         return None
-
+    
 
 def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
-    """Carga archivo CSV"""
+    """Carga archivo CSV - con conversión especial para SP500"""
     try:
         data_source = get_data_source()
         if data_source != "sqlite":
             return None
         
+        # SOLO cargar calendario si es SP500
+        calendario = None
+        if hoja_destino.upper() == "SP500":
+            calendario = cargar_calendario_vencimientos()
+            if not calendario:
+                mostrar_mensaje("warning", "⚠️ No se encontró calendario de vencimientos para SP500")
+            else:
+                logger.info(f"Calendario cargado para SP500 con {len(calendario)} fechas")
+        
         contents = uploaded_csv.getvalue()
-        df_csv = pd.read_csv(io.BytesIO(contents))
         
-        column_mapping = {
-            "Fecha de Extracción": "extraction_date",
-            "Expiration Date": "expiration_date", 
-            "Strike": "strike",
-            "Call Open Interest": "call_oi",
-            "Put Open Interest": "put_oi"
-        }
-        
-        for old_col, new_col in column_mapping.items():
-            if old_col in df_csv.columns and new_col not in df_csv.columns:
-                df_csv = df_csv.rename(columns={old_col: new_col})
-        
-        required_columns = ['strike', 'call_oi', 'put_oi', 'expiration_date']
-        missing_columns = [col for col in required_columns if col not in df_csv.columns]
-        if missing_columns:
+        # Leer CSV
+        try:
+            # Intentar leer con diferentes encodings
+            try:
+                df_csv = pd.read_csv(io.BytesIO(contents), skiprows=3, header=0, sep=',')
+            except:
+                # Intentar con encoding diferente
+                df_csv = pd.read_csv(io.BytesIO(contents), skiprows=3, header=0, sep=',', encoding='latin-1')
+        except Exception as e:
+            logger.error(f"Error leyendo CSV: {e}")
+            mostrar_mensaje("error", f"Error leyendo CSV: {str(e)}")
             return None
         
-        df_csv['call_oi'] = pd.to_numeric(df_csv['call_oi'], errors='coerce').fillna(0).astype(int)
-        df_csv['put_oi'] = pd.to_numeric(df_csv['put_oi'], errors='coerce').fillna(0).astype(int)
-        df_csv['strike'] = pd.to_numeric(df_csv['strike'], errors='coerce')
+        # Verificar formato esperado
+        expected_columns = ['Expiration Date', 'Open Interest', 'Strike', 'Open Interest.1']
+        if not all(col in df_csv.columns for col in expected_columns):
+            mostrar_mensaje("error", "❌ Formato de CSV incorrecto")
+            logger.error(f"Columnas encontradas: {df_csv.columns.tolist()}")
+            return None
         
+        # Renombrar columnas
+        df_csv = df_csv[expected_columns]
+        df_csv.columns = ['Expiration Date', 'Call Open Interest', 'Strike', 'Put Open Interest']
+        
+        logger.info(f"CSV cargado: {len(df_csv)} registros para {hoja_destino}")
+        
+        # CONVERTIR FECHAS DE VENCIMIENTO SOLO PARA SP500
+        if hoja_destino.upper() == "SP500" and calendario:
+            logger.info("Aplicando conversión de fechas para SP500...")
+            fechas_convertidas = []
+            
+            for fecha_venc in df_csv['Expiration Date']:
+                fecha_str = str(fecha_venc).strip().upper()
+                
+                # Limpiar el string
+                fecha_str = fecha_str.replace('  ', ' ').replace('"', '').replace("'", "")
+                
+                # Intentar diferentes formatos
+                fecha_dt = None
+                
+                # Formato 1: "DEC 2025" o "DIC 2025"
+                if fecha_dt is None and len(fecha_str.split()) >= 2:
+                    partes = fecha_str.split()
+                    mes_abrev = partes[0][:3].upper()  # Primeras 3 letras
+                    try:
+                        año = int(partes[1])
+                        clave = f"{mes_abrev} {año}"
+                        
+                        if clave in calendario:
+                            fecha_dt = calendario[clave]
+                            logger.debug(f"Convertido {fecha_str} -> {fecha_dt}")
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Formato 2: "DICIEMBRE 2025"
+                if fecha_dt is None and len(fecha_str.split()) >= 2:
+                    partes = fecha_str.split()
+                    mes_completo = partes[0]
+                    try:
+                        año = int(partes[1])
+                        clave = f"{mes_completo} {año}"
+                        
+                        if clave in calendario:
+                            fecha_dt = calendario[clave]
+                    except (ValueError, IndexError):
+                        pass
+                
+                # Formato 3: Ya es datetime
+                if fecha_dt is None:
+                    try:
+                        fecha_dt = pd.to_datetime(fecha_str, errors='coerce')
+                    except:
+                        pass
+                
+                # Si no se pudo convertir, usar fecha actual + 30 días como fallback
+                if fecha_dt is None or pd.isna(fecha_dt):
+                    logger.warning(f"No se pudo convertir fecha: {fecha_str}")
+                    fecha_dt = pd.to_datetime(fecha_extraccion) + pd.Timedelta(days=30)
+                
+                fechas_convertidas.append(fecha_dt)
+            
+            # Reemplazar columna con fechas convertidas
+            df_csv['Expiration Date'] = fechas_convertidas
+            
+            # Verificar conversiones
+            fechas_unicas = df_csv['Expiration Date'].dt.strftime('%Y-%m-%d').unique()
+            logger.info(f"Fechas de vencimiento convertidas para SP500: {fechas_unicas}")
+            
+            if fechas_unicas:
+                mostrar_mensaje("info", f"📅 SP500 - Fechas convertidas: {', '.join(fechas_unicas[:3])}")
+        else:
+            # Para otros assets, solo convertir a datetime normal
+            logger.info(f"Conversión normal para {hoja_destino}")
+            df_csv['Expiration Date'] = pd.to_datetime(df_csv['Expiration Date'], errors='coerce')
+        
+        # Agregar fecha de extracción
         fecha_dt = pd.to_datetime(fecha_extraccion)
+        df_csv.insert(0, 'Fecha de Extracción', fecha_dt.date())
+        
+        logger.info(f"Fecha extracción: {fecha_extraccion}")
+        
+        # CREAR BACKUP DEL EXCEL ANTES DE MODIFICAR
+        if os.path.exists(EXCEL_PATH):
+            backup_dir = "backups"
+            os.makedirs(backup_dir, exist_ok=True)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            backup_filename = f"base_datos_backup_{timestamp}.xlsx"
+            backup_path = os.path.join(backup_dir, backup_filename)
+            shutil.copyfile(EXCEL_PATH, backup_path)
+            logger.info(f"Backup Excel creado: {backup_filename}")
+            mostrar_mensaje("success", f"Backup Excel creado: {backup_filename}")
+        
+        # Preparar DataFrame para inserción en BD
         df_csv['extraction_date'] = int(fecha_dt.strftime('%Y%m%d'))
         
-        df_csv['expiration_date'] = pd.to_datetime(df_csv['expiration_date'], errors='coerce')
-        df_csv['expiration_date'] = df_csv['expiration_date'].dt.strftime('%Y%m%d').astype(int)
+        # Asegurar que Expiration Date sea datetime
+        if not pd.api.types.is_datetime64_any_dtype(df_csv['Expiration Date']):
+            df_csv['Expiration Date'] = pd.to_datetime(df_csv['Expiration Date'], errors='coerce')
         
+        df_csv['expiration_date'] = df_csv['Expiration Date'].dt.strftime('%Y%m%d').astype(int)
+        df_csv['strike'] = pd.to_numeric(df_csv['Strike'], errors='coerce')
+        df_csv['call_oi'] = pd.to_numeric(df_csv['Call Open Interest'], errors='coerce').fillna(0).astype(int)
+        df_csv['put_oi'] = pd.to_numeric(df_csv['Put Open Interest'], errors='coerce').fillna(0).astype(int)
         df_csv['asset'] = hoja_destino.upper().strip()
-        df_csv = df_csv[['asset', 'extraction_date', 'expiration_date', 'strike', 'call_oi', 'put_oi']]
         
+        # Eliminar filas con datos inválidos
+        df_csv = df_csv.dropna(subset=['strike', 'expiration_date'])
+        
+        # Seleccionar columnas necesarias para BD
+        df_insert = df_csv[['asset', 'extraction_date', 'expiration_date', 'strike', 'call_oi', 'put_oi']]
+        
+        # Eliminar duplicados
+        df_insert = df_insert.drop_duplicates(subset=['asset', 'extraction_date', 'expiration_date', 'strike'])
+        
+        if df_insert.empty:
+            logger.error("No hay datos válidos para insertar")
+            mostrar_mensaje("error", "❌ No hay datos válidos para insertar")
+            return None
+        
+        # Insertar en SQLite
         conn = sqlite3.connect(DB_PATH)
         init_sqlite_pragmas(conn)
         
         try:
-            df_csv.to_sql("open_interest", conn, if_exists='append', index=False)
-            registros_agregados = len(df_csv)
-            conn.execute("ANALYZE;")
+            # Verificar duplicados
+            fecha_int = df_insert['extraction_date'].iloc[0]
+            
+            query = '''
+                SELECT extraction_date, expiration_date 
+                FROM open_interest 
+                WHERE asset = ?
+            '''
+            cursor = conn.execute(query, (hoja_destino.upper().strip(),))
+            existing_data = pd.DataFrame(cursor.fetchall(), columns=['extraction_date', 'expiration_date'])
+            
+            if not existing_data.empty:
+                combinaciones_existentes = existing_data[['extraction_date', 'expiration_date']].drop_duplicates()
+                nuevas_combinaciones = df_insert[['extraction_date', 'expiration_date']].drop_duplicates()
+                
+                conflictivas = nuevas_combinaciones.merge(
+                    combinaciones_existentes, 
+                    on=['extraction_date', 'expiration_date'], 
+                    how='inner'
+                )
+                
+                if not conflictivas.empty:
+                    logger.error(f"Ya existen datos para esa combinación en '{hoja_destino}'")
+                    mostrar_mensaje("warning", f"⚠️ Ya existen datos para algunas fechas en '{hoja_destino}'")
+                    
+                    # Insertar solo los no duplicados
+                    df_insert = df_insert.merge(
+                        conflictivas, 
+                        on=['extraction_date', 'expiration_date'], 
+                        how='left', 
+                        indicator=True
+                    )
+                    df_insert = df_insert[df_insert['_merge'] == 'left_only'].drop(columns=['_merge'])
+            
+            # Insertar datos
+            if not df_insert.empty:
+                df_insert.to_sql("open_interest", conn, if_exists='append', index=False)
+                registros_agregados = len(df_insert)
+                conn.commit()
+                conn.execute("ANALYZE;")
+                logger.info(f"CSV insertado en SQLite: {registros_agregados} registros")
+                
+                # Mostrar mensaje específico según asset
+                if hoja_destino.upper() == "SP500":
+                    mostrar_mensaje("success", f"✅ SP500: {registros_agregados} registros cargados con conversión de fechas")
+                else:
+                    mostrar_mensaje("success", f"✅ {hoja_destino}: {registros_agregados} registros cargados")
+            else:
+                mostrar_mensaje("warning", "⚠️ Todos los registros ya existían en la base de datos")
+                conn.close()
+                return {
+                    "error": True,
+                    "mensaje": "Todos los registros ya existían en la base de datos"
+                }
+                
         finally:
             conn.close()
         
+        # ACTUALIZAR EL ARCHIVO EXCEL
+        try:
+            if os.path.exists(EXCEL_PATH):
+                # Preparar DataFrame para Excel (formato estándar)
+                df_excel = df_csv[['Fecha de Extracción', 'Expiration Date', 'Strike', 
+                                   'Call Open Interest', 'Put Open Interest']].copy()
+                
+                # Formatear fechas para Excel
+                df_excel['Fecha de Extracción'] = pd.to_datetime(df_excel['Fecha de Extracción']).dt.date
+                df_excel['Expiration Date'] = pd.to_datetime(df_excel['Expiration Date']).dt.date
+                
+                # Leer todas las hojas existentes
+                hojas_excel = {}
+                try:
+                    excel_file = pd.ExcelFile(EXCEL_PATH)
+                    for sheet_name in excel_file.sheet_names:
+                        if sheet_name != hoja_destino:
+                            hojas_excel[sheet_name] = pd.read_excel(EXCEL_PATH, sheet_name=sheet_name)
+                except Exception as e:
+                    logger.warning(f"Error leyendo hojas existentes: {e}")
+                
+                # Leer y combinar la hoja destino
+                if hoja_destino in pd.ExcelFile(EXCEL_PATH).sheet_names:
+                    try:
+                        base_actual = pd.read_excel(EXCEL_PATH, sheet_name=hoja_destino)
+                        
+                        # Asegurar formato estándar en datos existentes
+                        if "Trade Date" in base_actual.columns:
+                            base_actual = base_actual.rename(columns={
+                                "Trade Date": "Fecha de Extracción",
+                                "call_oi": "Call Open Interest",
+                                "put_oi": "Put Open Interest"
+                            })
+                        
+                        # Convertir fechas a formato común
+                        base_actual['Expiration Date'] = pd.to_datetime(base_actual['Expiration Date']).dt.date
+                        base_actual['Fecha de Extracción'] = pd.to_datetime(base_actual['Fecha de Extracción']).dt.date
+                        
+                        # Combinar datos
+                        base_merged = pd.concat([base_actual, df_excel]).drop_duplicates(
+                            ['Fecha de Extracción', 'Expiration Date', 'Strike'],
+                            keep='last'
+                        )
+                    except Exception as e:
+                        logger.warning(f"Error leyendo hoja {hoja_destino}: {e}")
+                        base_merged = df_excel
+                else:
+                    base_merged = df_excel
+                
+                # Agregar la hoja actualizada
+                hojas_excel[hoja_destino] = base_merged
+                
+                # Guardar todas las hojas en el Excel
+                with pd.ExcelWriter(EXCEL_PATH, engine="openpyxl", mode="w") as writer:
+                    for hoja, datos in hojas_excel.items():
+                        datos.to_excel(writer, sheet_name=hoja, index=False)
+                
+                logger.info(f"Excel actualizado: {registros_agregados} registros agregados a hoja '{hoja_destino}'")
+                mostrar_mensaje("success", f"✅ Excel actualizado con {registros_agregados} registros")
+                
+        except Exception as e:
+            logger.error(f"Error actualizando Excel: {e}")
+            # No fallar si solo falla la actualización del Excel
+            logger.warning("SQLite actualizado pero Excel no pudo actualizarse")
+            mostrar_mensaje("warning", "⚠️ SQLite actualizado pero hubo un error al actualizar Excel")
+        
+        # Limpiar caché
         get_fechas_extraccion.clear()
         get_fechas_vencimiento.clear()
         get_strikes.clear()
         
         return {
-            "mensaje": f"CSV cargado exitosamente. {registros_agregados} registros agregados al asset '{hoja_destino}'.",
-            "registros_agregados": registros_agregados
+            "mensaje": f"CSV cargado exitosamente. {registros_agregados} registros agregados al asset '{hoja_destino}'",
+            "registros_agregados": registros_agregados,
+            "mostrar_popup": True,
+            "popup_titulo": "✅ CSV Cargado",
+            "popup_mensaje": f"{registros_agregados} registros agregados a '{hoja_destino}'"
         }
         
     except Exception as e:
         logger.error(f"Error cargando CSV: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        mostrar_mensaje("error", f"❌ Error al cargar CSV: {str(e)}")
         return None
+
+
+
 
 
 def verificar_base_datos():
@@ -1205,10 +1743,47 @@ with st.sidebar:
             if st.button("🚪 Salir", type="secondary", width="stretch"):
                 st.session_state["confirmar_salida"] = True
 
+
+def mostrar_popup_confirmacion(titulo: str, mensaje: str, icono: str = "✅"):
+    """Muestra un pop-up modal de confirmación"""
+    st.markdown(f"""
+        <div style="
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 30px 40px;
+            border-radius: 10px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            z-index: 9999;
+            text-align: center;
+            border: 2px solid #4CAF50;
+        ">
+            <div style="font-size: 48px; margin-bottom: 15px;">{icono}</div>
+            <h2 style="color: #333; margin-bottom: 10px;">{titulo}</h2>
+            <p style="color: #666; font-size: 16px;">{mensaje}</p>
+        </div>
+        <div style="
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.5);
+            z-index: 9998;
+        "></div>
+    """, unsafe_allow_html=True)
+    time.sleep(2)  # Mostrar durante 2 segundos
+
+
 # ==== CONTENIDO PRINCIPAL ====
 
 if not st.session_state.get("confirmar_salida", False):
     
+    # 🔹 MOSTRAR MENSAJES PENDIENTES
+    mostrar_mensaje_pendiente()
+
     # ==== VISUALIZACIÓN ====
     if selected == "Visualización":
         st.markdown("<h2 class='fade-in'>Visualización</h2>", unsafe_allow_html=True)
@@ -1880,7 +2455,7 @@ if not st.session_state.get("confirmar_salida", False):
                             st.session_state["resultado_visualizacion"] = None
                             st.session_state["filtros_estadisticas"] = None
                             st.session_state["resultado_estadisticas"] = None
-                            
+                            time.sleep(2)
                             mostrar_mensaje("success", resultado["mensaje"])
                             st.rerun()
         
@@ -1920,16 +2495,24 @@ if not st.session_state.get("confirmar_salida", False):
                         resultado = upload_csv_file(uploaded_csv, hoja_csv, fecha_str)
                         
                         if resultado:
-                            get_fechas_extraccion.clear()
-                            get_fechas_vencimiento.clear()
-                            get_strikes.clear()
-                            st.session_state["filtros_visualizacion"] = None
-                            st.session_state["resultado_visualizacion"] = None
-                            st.session_state["filtros_estadisticas"] = None
-                            st.session_state["resultado_estadisticas"] = None
-                            
-                            mostrar_mensaje("success", resultado["mensaje"])
-                            st.rerun()
+                            if resultado.get("error"):
+                                mostrar_mensaje("error", resultado["mensaje"])
+                                time.sleep(2)
+                            else:
+                                get_fechas_extraccion.clear()
+                                get_fechas_vencimiento.clear()
+                                get_strikes.clear()
+                                st.session_state["filtros_visualizacion"] = None
+                                st.session_state["resultado_visualizacion"] = None
+                                st.session_state["filtros_estadisticas"] = None
+                                st.session_state["resultado_estadisticas"] = None
+
+                                mostrar_mensaje("success", resultado["mensaje"])
+                                time.sleep(2)
+                                st.rerun()
+                        else:
+                            mostrar_mensaje("error", "Error al cargar el archivo CSV. Verifique el formato.")
+                            time.sleep(2)
         
         else:  # Convertir Excel a Base de Datos
             st.markdown("#### 🔄 Convertir Excel a BD SQLite")
@@ -1952,13 +2535,30 @@ if not st.session_state.get("confirmar_salida", False):
                 
                 if st.button("🔄 Convertir Excel a Base de Datos SQLite", type="primary", width="stretch"):
                     with st.spinner("Convirtiendo Excel a base de datos SQLite..."):
+                        # Backup de BD existente si existe
+                        if os.path.exists(DB_PATH):
+                            backup_dir = "backups"
+                            os.makedirs(backup_dir, exist_ok=True)
+                            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                            backup_filename = f"base_datos_backup_{timestamp}.db"
+                            backup_path = os.path.join(backup_dir, backup_filename)
+                            shutil.copyfile(DB_PATH, backup_path)
+                            time.sleep(2)
+                            mostrar_mensaje("success", f"Backup creado: {backup_filename}")
+                            # Eliminar BD antigua
+                            os.remove(DB_PATH)
+                        
                         success = create_sqlite_from_excel()
                         if success:
                             mostrar_mensaje("success", "Base de datos SQLite creada exitosamente")
                             get_estado.clear()
+                            get_fechas_extraccion.clear()
+                            get_fechas_vencimiento.clear()
+                            get_strikes.clear()
                             st.rerun()
                         else:
                             mostrar_mensaje("error", "Error al crear la base de datos")
+
             else:
                 st.info("""
                 **Esta opción convierte un archivo Excel existente a base de datos SQLite.**
@@ -1966,6 +2566,7 @@ if not st.session_state.get("confirmar_salida", False):
                 Actualmente no hay archivos Excel para convertir.
                 """)
     
+
     # ==== CONFIGURACIÓN ====
     elif selected == "Configuración":
         st.markdown("<h2 class='fade-in'>Configuración</h2>", unsafe_allow_html=True)
