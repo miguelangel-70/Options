@@ -60,64 +60,7 @@ def get_data_source():
 
 import time
 
-def mostrar_mensaje(tipo, texto):
-    """
-    Agrega un mensaje a la cola para mostrarlo después del rerun
-    """
-    # Inicializar cola si no existe
-    if "cola_mensajes" not in st.session_state:
-        st.session_state["cola_mensajes"] = []
-    
-    # Agregar mensaje a la cola (evitar duplicados recientes)
-    mensaje_nuevo = {
-        "tipo": tipo,
-        "texto": texto,
-        "timestamp": time.time()
-    }
-    
-    # Verificar si el mensaje ya existe en la cola (últimos 2 segundos)
-    duplicado = False
-    for msg in st.session_state["cola_mensajes"]:
-        if msg["texto"] == texto and (time.time() - msg["timestamp"]) < 2:
-            duplicado = True
-            break
-    
-    if not duplicado:
-        st.session_state["cola_mensajes"].append(mensaje_nuevo)
 
-
-def mostrar_mensaje_pendiente():
-    """
-    Muestra todos los mensajes pendientes en la cola
-    DEBE LLAMARSE AL INICIO DEL CONTENIDO PRINCIPAL
-    """
-    if "cola_mensajes" not in st.session_state:
-        return
-    
-    mensajes_a_eliminar = []
-    
-    for idx, msg in enumerate(st.session_state["cola_mensajes"]):
-        # Solo mostrar mensajes recientes (menos de 5 segundos)
-        if time.time() - msg["timestamp"] < 5:
-            
-            # Mostrar según tipo
-            if msg["tipo"] == "success":
-                st.success(msg["texto"])
-            elif msg["tipo"] == "warning":
-                st.warning(msg["texto"])
-            elif msg["tipo"] == "error":
-                st.error(msg["texto"])
-            else:
-                st.info(msg["texto"])
-            
-            mensajes_a_eliminar.append(idx)
-        else:
-            # Marcar mensajes antiguos para eliminar
-            mensajes_a_eliminar.append(idx)
-    
-    # Eliminar mensajes mostrados o expirados (en orden inverso para no afectar índices)
-    for idx in sorted(mensajes_a_eliminar, reverse=True):
-        st.session_state["cola_mensajes"].pop(idx)
 
 
 def init_sqlite_pragmas(conn: sqlite3.Connection) -> None:
@@ -313,7 +256,6 @@ def execute_sql_query(query: str, params: tuple = None):
     finally:
         conn.close()
 
-
 def upload_excel_file(uploaded_file):
     """Carga archivo Excel"""
     try:
@@ -360,6 +302,7 @@ def upload_excel_file(uploaded_file):
             pass
         return None
 
+        
 def cargar_calendario_vencimientos():
     """Carga el calendario de vencimientos y crea diccionario de mapeo"""
     try:
@@ -445,7 +388,7 @@ def cargar_calendario_vencimientos():
         
         if missing_cols:
             logger.error(f"Columnas faltantes en calendario: {missing_cols}")
-            mostrar_mensaje("error", f"❌ Faltan columnas en calendario: {missing_cols}")
+            mostrar_mensaje("error", f"Faltan columnas en calendario: {missing_cols}")
             return {}
         
         # Convertir fechas
@@ -1198,15 +1141,15 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
         if data_source != "sqlite":
             return None
         
-        # SOLO cargar calendario si es SP500
+        # SOLO cargar calendario si es SP500 y BUND
         calendario = None
-        if hoja_destino.upper() == "SP500":
+        if hoja_destino.upper() in ["SP500", "BUND"]:
             calendario = cargar_calendario_vencimientos()
             if not calendario:
-                mostrar_mensaje("warning", "⚠️ No se encontró calendario de vencimientos para SP500")
+                mostrar_mensaje("warning", f"No se encontró calendario de vencimientos para {hoja_destino}")
             else:
-                logger.info(f"Calendario cargado para SP500 con {len(calendario)} fechas")
-        
+                logger.info(f"Calendario cargado para {hoja_destino} con {len(calendario)} fechas")
+
         contents = uploaded_csv.getvalue()
         
         # Leer CSV
@@ -1225,7 +1168,7 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
         # Verificar formato esperado
         expected_columns = ['Expiration Date', 'Open Interest', 'Strike', 'Open Interest.1']
         if not all(col in df_csv.columns for col in expected_columns):
-            mostrar_mensaje("error", "❌ Formato de CSV incorrecto")
+            mostrar_mensaje("error", "Formato de CSV incorrecto")
             logger.error(f"Columnas encontradas: {df_csv.columns.tolist()}")
             return None
         
@@ -1236,8 +1179,8 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
         logger.info(f"CSV cargado: {len(df_csv)} registros para {hoja_destino}")
         
         # CONVERTIR FECHAS DE VENCIMIENTO SOLO PARA SP500
-        if hoja_destino.upper() == "SP500" and calendario:
-            logger.info("Aplicando conversión de fechas para SP500...")
+        if hoja_destino.upper() in ["SP500", "BUND"] and calendario:
+            logger.info(f"Aplicando conversión de fechas para {hoja_destino}...")
             fechas_convertidas = []
             
             for fecha_venc in df_csv['Expiration Date']:
@@ -1295,10 +1238,12 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
             
             # Verificar conversiones
             fechas_unicas = df_csv['Expiration Date'].dt.strftime('%Y-%m-%d').unique()
-            logger.info(f"Fechas de vencimiento convertidas para SP500: {fechas_unicas}")
-            
-            if fechas_unicas:
-                mostrar_mensaje("info", f"📅 SP500 - Fechas convertidas: {', '.join(fechas_unicas[:3])}")
+            logger.info(f"Fechas de vencimiento convertidas para {hoja_destino}: {fechas_unicas}")
+
+            if len(fechas_unicas) > 0:
+                mostrar_mensaje("info", f"📅 {hoja_destino} - Fechas convertidas: {', '.join(fechas_unicas[:3])}")
+
+             
         else:
             # Para otros assets, solo convertir a datetime normal
             logger.info(f"Conversión normal para {hoja_destino}")
@@ -1345,7 +1290,7 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
         
         if df_insert.empty:
             logger.error("No hay datos válidos para insertar")
-            mostrar_mensaje("error", "❌ No hay datos válidos para insertar")
+            mostrar_mensaje("error", "No hay datos válidos para insertar")
             return None
         
         # Insertar en SQLite
@@ -1374,9 +1319,11 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
                     how='inner'
                 )
                 
+
                 if not conflictivas.empty:
+                    num_duplicados = len(df_insert.merge(conflictivas, on=['extraction_date', 'expiration_date'], how='inner'))
                     logger.error(f"Ya existen datos para esa combinación en '{hoja_destino}'")
-                    mostrar_mensaje("warning", f"⚠️ Ya existen datos para algunas fechas en '{hoja_destino}'")
+                    mostrar_mensaje("warning", f"Ya existen datos para algunas fechas en '{hoja_destino}'")
                     
                     # Insertar solo los no duplicados
                     df_insert = df_insert.merge(
@@ -1386,6 +1333,24 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
                         indicator=True
                     )
                     df_insert = df_insert[df_insert['_merge'] == 'left_only'].drop(columns=['_merge'])
+                    
+                    # Si no quedan registros para insertar, mostrar popup y retornar
+                    if df_insert.empty:
+                        conn.close()
+                        return {
+                            "error": True,
+                            "mensaje": f"Todos los registros ({num_duplicados}) ya existían en la base de datos",
+                            "mostrar_popup": True,
+                            "popup_titulo": "⚠️ Datos Duplicados",
+                            "popup_mensaje": f"Todos los {num_duplicados} registros ya existían en '{hoja_destino}'"
+                        }
+
+
+
+
+
+
+
             
             # Insertar datos
             if not df_insert.empty:
@@ -1396,12 +1361,21 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
                 logger.info(f"CSV insertado en SQLite: {registros_agregados} registros")
                 
                 # Mostrar mensaje específico según asset
-                if hoja_destino.upper() == "SP500":
-                    mostrar_mensaje("success", f"✅ SP500: {registros_agregados} registros cargados con conversión de fechas")
+
+
+                if hoja_destino.upper() in ["SP500", "BUND"]:
+                    mostrar_mensaje("success", f"{hoja_destino}: {registros_agregados} registros cargados con conversión de fechas")
+                    # Opcional: mostrar popup también
+                    mostrar_popup("✅ CSV Cargado", 
+                                f"{registros_agregados} registros agregados a '{hoja_destino}'", 
+                                tipo="success")
                 else:
-                    mostrar_mensaje("success", f"✅ {hoja_destino}: {registros_agregados} registros cargados")
+                    mostrar_mensaje("success", f"{hoja_destino}: {registros_agregados} registros cargados")
+
+
+
             else:
-                mostrar_mensaje("warning", "⚠️ Todos los registros ya existían en la base de datos")
+                mostrar_mensaje("warning", "Todos los registros ya existían en la base de datos")
                 conn.close()
                 return {
                     "error": True,
@@ -1469,13 +1443,13 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
                         datos.to_excel(writer, sheet_name=hoja, index=False)
                 
                 logger.info(f"Excel actualizado: {registros_agregados} registros agregados a hoja '{hoja_destino}'")
-                mostrar_mensaje("success", f"✅ Excel actualizado con {registros_agregados} registros")
+                mostrar_mensaje("success", f"Excel actualizado con {registros_agregados} registros")
                 
         except Exception as e:
             logger.error(f"Error actualizando Excel: {e}")
             # No fallar si solo falla la actualización del Excel
             logger.warning("SQLite actualizado pero Excel no pudo actualizarse")
-            mostrar_mensaje("warning", "⚠️ SQLite actualizado pero hubo un error al actualizar Excel")
+            mostrar_mensaje("warning", "SQLite actualizado pero hubo un error al actualizar Excel")
         
         # Limpiar caché
         get_fechas_extraccion.clear()
@@ -1494,11 +1468,8 @@ def upload_csv_file(uploaded_csv, hoja_destino: str, fecha_extraccion: str):
         logger.error(f"Error cargando CSV: {e}")
         import traceback
         logger.error(traceback.format_exc())
-        mostrar_mensaje("error", f"❌ Error al cargar CSV: {str(e)}")
+        mostrar_mensaje("error", f"Error al cargar CSV: {str(e)}")
         return None
-
-
-
 
 
 def verificar_base_datos():
@@ -1594,17 +1565,6 @@ def verificar_base_datos():
 # ============================================================================
 # INTERFAZ STREAMLIT (del frontend.py)
 # ============================================================================
-
-def mostrar_mensaje(tipo, texto):
-    """Muestra mensajes toast"""
-    if tipo == "success":
-        st.toast(texto, icon="✅")
-    elif tipo == "warning":
-        st.toast(texto, icon="⚠️")
-    elif tipo == "error":
-        st.toast(texto, icon="❌")
-    else:
-        st.toast(texto, icon="ℹ️")
 
 
 # ==== ESTADO INICIAL ====
@@ -1718,7 +1678,7 @@ with st.sidebar:
         col_si, col_no = st.columns(2)
         
         with col_si:
-            if st.button("✅ Sí, salir", type="primary", width="stretch"):
+            if st.button("✅ Sí, salir", type="primary", width="stretch", key="btn_confirmar_salir"):
                 st.balloons()
                 st.success("¡Cerrando aplicación!")
                 
@@ -1734,56 +1694,173 @@ with st.sidebar:
                 os._exit(0)
         
         with col_no:
-            if st.button("❌ Cancelar", width="stretch"):
+            if st.button("❌ Cancelar", width="stretch", key="btn_cancelar_salir"):
                 st.session_state["confirmar_salida"] = False
     else:
         col1, col2, col3 = st.columns([1, 2, 1])
         
         with col2:
-            if st.button("🚪 Salir", type="secondary", width="stretch"):
+            if st.button("🚪 Salir", type="secondary", width="stretch", key="btn_salir_sidebar"):
                 st.session_state["confirmar_salida"] = True
 
 
-def mostrar_popup_confirmacion(titulo: str, mensaje: str, icono: str = "✅"):
-    """Muestra un pop-up modal de confirmación"""
-    st.markdown(f"""
-        <div style="
-            position: fixed;
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            background: white;
-            padding: 30px 40px;
-            border-radius: 10px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
-            z-index: 9999;
-            text-align: center;
-            border: 2px solid #4CAF50;
-        ">
-            <div style="font-size: 48px; margin-bottom: 15px;">{icono}</div>
-            <h2 style="color: #333; margin-bottom: 10px;">{titulo}</h2>
-            <p style="color: #666; font-size: 16px;">{mensaje}</p>
-        </div>
-        <div style="
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0,0,0,0.5);
-            z-index: 9998;
-        "></div>
-    """, unsafe_allow_html=True)
-    time.sleep(2)  # Mostrar durante 2 segundos
+# ============================================================================
+# SISTEMA UNIFICADO DE MENSAJES Y POP-UPS
+# ============================================================================
+
+def mostrar_mensaje(tipo: str, texto: str, duracion: int = 4):
+    """
+    Muestra mensajes toast (notificaciones emergentes)
+    Tipos: success, warning, error, info
+    """
+    iconos = {
+        "success": "✅",
+        "warning": "⚠️",
+        "error": "❌",
+        "info": "ℹ️"
+    }
+    
+    icono = iconos.get(tipo, "ℹ️")
+    
+    # Usar st.toast() si está disponible (Streamlit >= 1.28)
+    try:
+        st.toast(f"{icono} {texto}", icon=icono)
+    except:
+        # Fallback para versiones anteriores
+        if tipo == "success":
+            st.success(texto)
+        elif tipo == "warning":
+            st.warning(texto)
+        elif tipo == "error":
+            st.error(texto)
+        else:
+            st.info(texto)
+
+def mostrar_popup(titulo: str, mensaje: str, tipo: str = "info", tiempo_auto_cierre: int = 3000):
+    """
+    Muestra un pop-up modal usando JavaScript
+    Tipos: success, warning, error, info, question
+    """
+    colores = {
+        "success": "#4CAF50",
+        "warning": "#FF9800",
+        "error": "#F44336",
+        "info": "#2196F3",
+        "question": "#9C27B0"
+    }
+    
+    iconos = {
+        "success": "✅",
+        "warning": "⚠️",
+        "error": "❌",
+        "info": "ℹ️",
+        "question": "❓"
+    }
+    
+    color = colores.get(tipo, "#2196F3")
+    icono = iconos.get(tipo, "ℹ️")
+    
+    # Crear popup con JavaScript
+    js_code = f"""
+    <script>
+    // Crear overlay
+    const overlay = document.createElement('div');
+    overlay.id = 'custom-popup-overlay';
+    overlay.style.position = 'fixed';
+    overlay.style.top = '0';
+    overlay.style.left = '0';
+    overlay.style.width = '100%';
+    overlay.style.height = '100%';
+    overlay.style.backgroundColor = 'rgba(0,0,0,0.5)';
+    overlay.style.zIndex = '9998';
+    overlay.style.display = 'flex';
+    overlay.style.justifyContent = 'center';
+    overlay.style.alignItems = 'center';
+    overlay.style.backdropFilter = 'blur(3px)';
+    
+    // Crear popup
+    const popup = document.createElement('div');
+    popup.style.backgroundColor = 'white';
+    popup.style.padding = '25px 35px';
+    popup.style.borderRadius = '12px';
+    popup.style.boxShadow = '0 10px 40px rgba(0,0,0,0.3)';
+    popup.style.zIndex = '9999';
+    popup.style.textAlign = 'center';
+    popup.style.border = '3px solid {color}';
+    popup.style.maxWidth = '450px';
+    popup.style.margin = '20px';
+    popup.style.animation = 'fadeIn 0.3s ease-out';
+    
+    // Contenido del popup
+    popup.innerHTML = `
+        <div style="font-size: 52px; margin-bottom: 15px; color: {color};">{icono}</div>
+        <h2 style="color: #333; margin-bottom: 12px; font-size: 22px;">{titulo}</h2>
+        <p style="color: #555; font-size: 16px; line-height: 1.5;">{mensaje}</p>
+        <button id="popup-ok-btn" 
+                style="margin-top: 25px; padding: 12px 30px; background: {color}; 
+                       color: white; border: none; border-radius: 6px; 
+                       cursor: pointer; font-size: 16px; font-weight: bold;
+                       transition: all 0.2s;">
+            OK
+        </button>
+    `;
+    
+    // Estilos de animación
+    const style = document.createElement('style');
+    style.innerHTML = `
+        @keyframes fadeIn {{
+            from {{ opacity: 0; transform: scale(0.9); }}
+            to {{ opacity: 1; transform: scale(1); }}
+        }}
+        #popup-ok-btn:hover {{
+            transform: scale(1.05);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }}
+    `;
+    document.head.appendChild(style);
+    
+    overlay.appendChild(popup);
+    document.body.appendChild(overlay);
+    
+    // Evento para cerrar
+    document.getElementById('popup-ok-btn').onclick = function() {{
+        overlay.remove();
+    }};
+    
+    // Cerrar al hacer clic fuera del popup
+    overlay.onclick = function(e) {{
+        if (e.target === overlay) {{
+            overlay.remove();
+        }}
+    }};
+    
+    // Auto-cierre después de X segundos
+    setTimeout(() => {{
+        if (document.body.contains(overlay)) {{
+            overlay.remove();
+        }}
+    }}, {tiempo_auto_cierre});
+    </script>
+    """
+    
+    st.markdown(js_code, unsafe_allow_html=True)
+
+def mostrar_alerta_simple(mensaje: str):
+    """
+    Muestra una alerta simple del navegador (útil para mensajes críticos)
+    """
+    js_code = f"""
+    <script>
+    alert("{mensaje}");
+    </script>
+    """
+    st.markdown(js_code, unsafe_allow_html=True)
 
 
 # ==== CONTENIDO PRINCIPAL ====
 
 if not st.session_state.get("confirmar_salida", False):
     
-    # 🔹 MOSTRAR MENSAJES PENDIENTES
-    mostrar_mensaje_pendiente()
-
     # ==== VISUALIZACIÓN ====
     if selected == "Visualización":
         st.markdown("<h2 class='fade-in'>Visualización</h2>", unsafe_allow_html=True)
@@ -1995,7 +2072,7 @@ if not st.session_state.get("confirmar_salida", False):
                 key="selector_vencimiento"
             )
             
-            if st.button("🔍 Cargar Datos del Vencimiento", type="primary", width="stretch"):
+            if st.button("🔍 Cargar Datos del Vencimiento", type="primary", width="stretch", key="btn_cargar_vencimiento"):
                 st.session_state["vencimiento_seleccionado"] = fecha_vencimiento_seleccionada
                 st.rerun()
         
@@ -2312,7 +2389,7 @@ if not st.session_state.get("confirmar_salida", False):
             if st.session_state.get("bloqueo_temporal", False):
                 st.error("🔒 **Acceso temporalmente bloqueado**")
                 
-                if st.button("🔄 Intentar nuevamente", type="primary"):
+                if st.button("🔄 Intentar nuevamente", type="primary", key="btn_reintentar_auth"):
                     st.session_state["bloqueo_temporal"] = False
                     st.session_state["intentos_password"] = 0
                     st.rerun()
@@ -2332,7 +2409,7 @@ if not st.session_state.get("confirmar_salida", False):
                         placeholder="Ingrese la contraseña..."
                     )
                     
-                    submit = st.form_submit_button("🔓 Acceder a Cargar Datos", type="primary", width="stretch")
+                    submit = st.form_submit_button("🔓 Acceder a Cargar Datos", type="primary", width="stretch", key="btn_acceder_cargar")
                     
                     if submit:
                         if password:
@@ -2341,20 +2418,20 @@ if not st.session_state.get("confirmar_salida", False):
                             if password == PASSWORD_CORRECTA:
                                 st.session_state["acceso_cargar_datos"] = True
                                 st.session_state["intentos_password"] = 0
-                                mostrar_mensaje("success", "✅ Acceso concedido")
+                                mostrar_mensaje("success", "Acceso concedido")
                                 st.rerun()
                             else:
                                 st.session_state["intentos_password"] = st.session_state.get("intentos_password", 0) + 1
                                 intentos_restantes = 3 - st.session_state["intentos_password"]
                                 
                                 if intentos_restantes > 0:
-                                    mostrar_mensaje("error", f"❌ Contraseña incorrecta. {intentos_restantes} intentos restantes.")
+                                    mostrar_mensaje("error", f"Contraseña incorrecta. {intentos_restantes} intentos restantes.")
                                 else:
-                                    mostrar_mensaje("error", "❌ Demasiados intentos fallidos.")
+                                    mostrar_mensaje("error", "Demasiados intentos fallidos.")
                                     st.session_state["bloqueo_temporal"] = True
                                     st.rerun()
                         else:
-                            mostrar_mensaje("warning", "⚠️ Por favor ingrese una contraseña")
+                            mostrar_mensaje("warning", "Por favor ingrese una contraseña")
             
             with col2:
                 st.markdown("### ℹ️ Información")
@@ -2374,7 +2451,7 @@ if not st.session_state.get("confirmar_salida", False):
         with col_encabezado:
             st.success("✅ **Acceso administrativo activo**")
         with col_cerrar:
-            if st.button("🔒 Cerrar acceso", type="secondary", width="stretch"):
+            if st.button("🔒 Cerrar acceso", type="secondary", width="stretch", key="btn_cerrar_acceso"):
                 st.session_state["acceso_cargar_datos"] = False
                 mostrar_mensaje("info", "🔒 Acceso a Cargar Datos cerrado")
                 st.rerun()
@@ -2442,7 +2519,7 @@ if not st.session_state.get("confirmar_salida", False):
             if uploaded_file:
                 st.info(f"**Archivo seleccionado:** {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
                 
-                if st.button("🚀 Cargar Excel y Crear Base de Datos", type="primary", width="stretch"):
+                if st.button("🚀 Cargar Excel y Crear Base de Datos", type="primary", width="stretch", key="btn_cargar_excel"):
                     with st.spinner("Cargando archivo y creando base de datos SQLite..."):
                         resultado = upload_excel_file(uploaded_file)
                         
@@ -2489,30 +2566,58 @@ if not st.session_state.get("confirmar_salida", False):
                 
                 hoja_csv = st.selectbox("**Asset/Hoja destino** para los datos:", opciones_destino)
                 
-                if st.button("📥 Cargar CSV en Base de Datos", type="primary", width="stretch"):
+                if st.button("📥 Cargar CSV en Base de Datos", type="primary", width="stretch", key="btn_cargar_csv_principal"):
                     with st.spinner("Procesando y cargando datos CSV..."):
                         fecha_str = st.session_state["fecha_extraccion_csv"].strftime('%Y-%m-%d')
                         resultado = upload_csv_file(uploaded_csv, hoja_csv, fecha_str)
                         
-                        if resultado:
-                            if resultado.get("error"):
-                                mostrar_mensaje("error", resultado["mensaje"])
-                                time.sleep(2)
-                            else:
-                                get_fechas_extraccion.clear()
-                                get_fechas_vencimiento.clear()
-                                get_strikes.clear()
-                                st.session_state["filtros_visualizacion"] = None
-                                st.session_state["resultado_visualizacion"] = None
-                                st.session_state["filtros_estadisticas"] = None
-                                st.session_state["resultado_estadisticas"] = None
+                        if st.button("📥 Cargar CSV en Base de Datos", type="primary", width="stretch"):
+                            with st.spinner("Procesando y cargando datos CSV..."):
+                                fecha_str = st.session_state["fecha_extraccion_csv"].strftime('%Y-%m-%d')
+                                resultado = upload_csv_file(uploaded_csv, hoja_csv, fecha_str)
+                                
+                                if resultado:
+                                    if resultado.get("error"):
+                                        mostrar_mensaje("error", resultado["mensaje"])
+                                        
+                                        # Mostrar popup si viene en resultado
+                                        if resultado.get("mostrar_popup"):
+                                            mostrar_popup(
+                                                resultado.get("popup_titulo", "⚠️ Advertencia"),
+                                                resultado.get("popup_mensaje", ""),
+                                                tipo="warning"
+                                            )
+                                        
+                                        time.sleep(1)
+                                    else:
+                                        # Limpiar caché
+                                        get_fechas_extraccion.clear()
+                                        get_fechas_vencimiento.clear()
+                                        get_strikes.clear()
+                                        st.session_state["filtros_visualizacion"] = None
+                                        st.session_state["resultado_visualizacion"] = None
+                                        st.session_state["filtros_estadisticas"] = None
+                                        st.session_state["resultado_estadisticas"] = None
+                                        
+                                        # Mostrar mensaje toast
+                                        mostrar_mensaje("success", resultado["mensaje"])
+                                        
+                                        # Mostrar popup si viene en resultado
+                                        if resultado.get("mostrar_popup"):
+                                            mostrar_popup(
+                                                resultado.get("popup_titulo", "✅ Éxito"),
+                                                resultado.get("popup_mensaje", ""),
+                                                tipo="success"
+                                            )
+                                        
+                                        time.sleep(1)
+                                        st.rerun()
+                                else:
+                                    mostrar_mensaje("error", "Error al cargar el archivo CSV. Verifique el formato.")
+                                    time.sleep(1)
 
-                                mostrar_mensaje("success", resultado["mensaje"])
-                                time.sleep(2)
-                                st.rerun()
-                        else:
-                            mostrar_mensaje("error", "Error al cargar el archivo CSV. Verifique el formato.")
-                            time.sleep(2)
+
+
         
         else:  # Convertir Excel a Base de Datos
             st.markdown("#### 🔄 Convertir Excel a BD SQLite")
@@ -2533,7 +2638,7 @@ if not st.session_state.get("confirmar_salida", False):
                 - ✅ Operaciones más eficientes
                 """)
                 
-                if st.button("🔄 Convertir Excel a Base de Datos SQLite", type="primary", width="stretch"):
+                if st.button("🔄 Convertir Excel a Base de Datos SQLite", type="primary", width="stretch", key="btn_convertir_excel"):
                     with st.spinner("Convirtiendo Excel a base de datos SQLite..."):
                         # Backup de BD existente si existe
                         if os.path.exists(DB_PATH):
@@ -2605,7 +2710,7 @@ if not st.session_state.get("confirmar_salida", False):
         st.markdown("---")
         st.markdown("### Limpiar Caché")
         
-        if st.button("🧹 Limpiar Caché de la Aplicación", type="secondary"):
+        if st.button("🧹 Limpiar Caché de la Aplicación", type="secondary", key="btn_limpiar_cache"):
             get_estado.clear()
             get_fechas_extraccion.clear()
             get_fechas_vencimiento.clear()
